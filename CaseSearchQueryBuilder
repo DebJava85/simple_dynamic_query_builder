@@ -1,0 +1,72 @@
+@Component
+public class CaseSearchQueryBuilder {
+
+    public record QueryWithParams(String sql, MapSqlParameterSource params) {}
+
+    public QueryWithParams build(SearchParam sp, boolean countOnly) {
+        Set<String> active = getActiveSections(sp);
+
+        List<String> selectFields = countOnly
+            ? List.of("COUNT(*)")
+            : new ArrayList<>(SectionColumnsRegistry.get("case"));
+
+        if (!countOnly) {
+            if (sp.getTranSearch() != null) selectFields.addAll(SectionColumnsRegistry.get("tran"));
+            if (sp.getCollabSearch() != null) selectFields.addAll(SectionColumnsRegistry.get("collab"));
+            if (sp.getFraudSearch() != null) selectFields.addAll(SectionColumnsRegistry.get("fraud"));
+        }
+
+        String selectClause = "SELECT " + String.join(", ", selectFields);
+        String fromClause = " FROM case_table c";
+
+        StringBuilder joinClause = new StringBuilder();
+        active.forEach(sec -> JoinRegistry.get(sec).ifPresent(joinClause::append));
+
+        // WHERE clause
+        List<String> whereConds = new ArrayList<>();
+        MapSqlParameterSource params = new MapSqlParameterSource();
+
+        ConditionBuilderUtils.appendCaseConditions(sp.getCaseSearch(), whereConds, params);
+        ConditionBuilderUtils.appendTranConditions(sp.getTranSearch(), whereConds, params);
+        ConditionBuilderUtils.appendCollabConditions(sp.getCollabSearch(), whereConds, params);
+        ConditionBuilderUtils.appendFraudConditions(sp.getFraudSearch(), whereConds, params);
+
+        String whereClause = whereConds.isEmpty() ? "" : " WHERE " + String.join(" AND ", whereConds);
+
+        String orderClause = "";
+        if (!countOnly && sp.getSort() != null && sp.getSort().getField() != null) {
+            orderClause = " ORDER BY " + resolveSortField(sp.getSort()) + " " +
+                ("desc".equalsIgnoreCase(sp.getSort().getDirection()) ? "DESC" : "ASC");
+        }
+
+        String pagination = "";
+        if (!countOnly && sp.getPagination() != null) {
+            int page = Optional.ofNullable(sp.getPagination().getPage()).orElse(0);
+            int size = Optional.ofNullable(sp.getPagination().getSize()).orElse(20);
+            pagination = " LIMIT :limit OFFSET :offset";
+            params.addValue("limit", size);
+            params.addValue("offset", page * size);
+        }
+
+        String finalSql = selectClause + fromClause + " " + joinClause + " " + whereClause + orderClause + pagination;
+        return new QueryWithParams(finalSql, params);
+    }
+
+    private String resolveSortField(SortParam sort) {
+        return switch (sort.getField()) {
+            case "caseNumber" -> "c.case_number";
+            case "amount" -> "t.amount";
+            case "merchantName" -> "t.merchant_name";
+            case "collabStatus" -> "cl.status";
+            default -> "c.case_id";
+        };
+    }
+
+    private Set<String> getActiveSections(SearchParam sp) {
+        Set<String> active = new HashSet<>();
+        if (sp.getTranSearch() != null) active.add("tran");
+        if (sp.getCollabSearch() != null) active.add("collab");
+        if (sp.getFraudSearch() != null) active.add("fraud");
+        return active;
+    }
+}
