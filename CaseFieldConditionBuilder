@@ -1,0 +1,249 @@
+public class CaseFieldConditionBuilder {
+
+    public static List<ConditionResult> build(CaseSearch cs) {
+        if (cs == null) return List.of();
+
+        List<ConditionResult> conditions = new ArrayList<>();
+        if (cs.getCaseNumber() != null) {
+            conditions.add(new ConditionResult("c.case_number = :caseNumber",
+                Map.of("caseNumber", cs.getCaseNumber())));
+        }
+        if (cs.getCaseStatus() != null) {
+            conditions.add(new ConditionResult("c.status = :caseStatus",
+                Map.of("caseStatus", cs.getCaseStatus())));
+        }
+        return conditions;
+    }
+}
+public class TranFieldConditionBuilder {
+
+    public static List<ConditionResult> build(TranSearch ts) {
+        if (ts == null) return List.of();
+
+        List<ConditionResult> conditions = new ArrayList<>();
+        if (ts.getMerchantName() != null) {
+            conditions.add(new ConditionResult("LOWER(t.merchant_name) LIKE LOWER(CONCAT('%', :merchantName, '%'))",
+                Map.of("merchantName", ts.getMerchantName())));
+        }
+        if (ts.getAmountFrom() != null) {
+            conditions.add(new ConditionResult("t.amount >= :amountFrom",
+                Map.of("amountFrom", ts.getAmountFrom())));
+        }
+        if (ts.getAmountTo() != null) {
+            conditions.add(new ConditionResult("t.amount <= :amountTo",
+                Map.of("amountTo", ts.getAmountTo())));
+        }
+        return conditions;
+    }
+}
+public class CollabFieldConditionBuilder {
+
+    public static List<ConditionResult> build(CollabSearch cs) {
+        if (cs == null) return List.of();
+
+        List<ConditionResult> conditions = new ArrayList<>();
+        if (cs.getStatus() != null) {
+            conditions.add(new ConditionResult("cl.status = :collabStatus",
+                Map.of("collabStatus", cs.getStatus())));
+        }
+        if (cs.getResponseDateFrom() != null) {
+            conditions.add(new ConditionResult("cl.response_date >= :responseDateFrom",
+                Map.of("responseDateFrom", cs.getResponseDateFrom())));
+        }
+        if (cs.getResponseDateTo() != null) {
+            conditions.add(new ConditionResult("cl.response_date <= :responseDateTo",
+                Map.of("responseDateTo", cs.getResponseDateTo())));
+        }
+        if (cs.getDaysToAct() != null) {
+            // Assuming current_date - crtn_date = daysToAct
+            conditions.add(new ConditionResult("DATEDIFF(day, cl.crtn_date, CURRENT_DATE) = :daysToAct",
+                Map.of("daysToAct", cs.getDaysToAct())));
+        }
+        return conditions;
+    }
+}
+public class FraudFieldConditionBuilder {
+
+    public static List<ConditionResult> build(FraudSearch fs) {
+        if (fs == null) return List.of();
+
+        List<ConditionResult> conditions = new ArrayList<>();
+        if (fs.getReasonCodes() != null && !fs.getReasonCodes().isEmpty()) {
+            conditions.add(new ConditionResult("f.reason_code IN (:reasonCodes)",
+                Map.of("reasonCodes", fs.getReasonCodes())));
+        }
+        return conditions;
+    }
+}
+public class ActiveSectionResolver {
+
+    public static Set<String> detect(SearchParam sp) {
+        Set<String> active = new HashSet<>();
+        if (sp.getCaseSearch() != null) active.add("case");
+        if (sp.getTranSearch() != null) active.add("tran");
+        if (sp.getCollabSearch() != null) active.add("collab");
+        if (sp.getFraudSearch() != null) active.add("fraud");
+        return active;
+    }
+}
+
+
+@Component
+public class CaseSearchQueryBuilder {
+
+    public static class QueryWithParams {
+        private final String sql;
+        private final MapSqlParameterSource params;
+
+        public QueryWithParams(String sql, MapSqlParameterSource params) {
+            this.sql = sql;
+            this.params = params;
+        }
+        public String getSql() { return sql; }
+        public MapSqlParameterSource getParams() { return params; }
+    }
+
+    public QueryWithParams build(SearchParam sp) {
+        Set<String> activeSections = ActiveSectionResolver.detect(sp);
+
+        // Build SELECT clause
+        List<String> selectCols = new ArrayList<>(SectionColumnsRegistry.getColumns("case"));
+        activeSections.forEach(sec -> selectCols.addAll(SectionColumnsRegistry.getColumns(sec)));
+        String selectClause = "SELECT " + String.join(", ", selectCols);
+
+        // Build FROM + JOIN clauses
+        StringBuilder fromClause = new StringBuilder(" FROM case_table c ");
+        for (String sec : activeSections) {
+            JoinRegistry.getJoinSql(sec).ifPresent(joinSql -> fromClause.append(" ").append(joinSql).append(" "));
+        }
+
+        // Build WHERE conditions
+        List<ConditionResult> conditions = new ArrayList<>();
+        conditions.addAll(CaseFieldConditionBuilder.build(sp.getCaseSearch()));
+        conditions.addAll(TranFieldConditionBuilder.build(sp.getTranSearch()));
+        conditions.addAll(CollabFieldConditionBuilder.build(sp.getCollabSearch()));
+        conditions.addAll(FraudFieldConditionBuilder.build(sp.getFraudSearch()));
+
+        StringBuilder whereClause = new StringBuilder();
+        Map<String, Object> params = new HashMap<>();
+
+        if (!conditions.isEmpty()) {
+            whereClause.append(" WHERE ");
+            for (int i = 0; i < conditions.size(); i++) {
+                ConditionResult cond = conditions.get(i);
+                if (i > 0) whereClause.append(" AND ");
+                whereClause.append(cond.getSql());
+                params.putAll(cond.getParams());
+            }
+        }
+
+        // Build ORDER BY clause
+        String orderByClause = "";
+        if (sp.getSort() != null && sp.getSort().getField() != null) {
+            Optional<String> col = SortableFieldRegistry.resolve(sp.getSort().getField());
+            if (col.isPresent()) {
+                String dir = "ASC";
+                if ("desc".equalsIgnoreCase(sp.getSort().getDirection())) {
+                    dir = "DESC";
+                }
+                orderByClause = " ORDER BY " + col.get() + " " + dir + " ";
+            }
+        }
+
+        // Pagination
+        String paginationClause = "";
+        Map<String, Object> paginationParams = new HashMap<>();
+        if (sp.getPagination() != null && sp.getPagination().getSize() != null) {
+            int page = sp.getPagination().getPage() != null ? sp.getPagination().getPage() : 0;
+            int size = sp.getPagination().getSize();
+            paginationClause = " LIMIT :limit OFFSET :offset ";
+            paginationParams.put("limit", size);
+            paginationParams.put("offset", page * size);
+        }
+
+        params.putAll(paginationParams);
+
+        String finalSql = selectClause + fromClause + whereClause + orderByClause + paginationClause;
+
+        return new QueryWithParams(finalSql, new MapSqlParameterSource(params));
+    }
+
+    public QueryWithParams buildCountQuery(SearchParam sp) {
+        Set<String> activeSections = ActiveSectionResolver.detect(sp);
+
+        String countSelect = "SELECT COUNT(*) ";
+        StringBuilder fromClause = new StringBuilder(" FROM case_table c ");
+        for (String sec : activeSections) {
+            JoinRegistry.getJoinSql(sec).ifPresent(joinSql -> fromClause.append(" ").append(joinSql).append(" "));
+        }
+
+        List<ConditionResult> conditions = new ArrayList<>();
+        conditions.addAll(CaseFieldConditionBuilder.build(sp.getCaseSearch()));
+        conditions.addAll(TranFieldConditionBuilder.build(sp.getTranSearch()));
+        conditions.addAll(CollabFieldConditionBuilder.build(sp.getCollabSearch()));
+        conditions.addAll(FraudFieldConditionBuilder.build(sp.getFraudSearch()));
+
+        StringBuilder whereClause = new StringBuilder();
+        Map<String, Object> params = new HashMap<>();
+
+        if (!conditions.isEmpty()) {
+            whereClause.append(" WHERE ");
+            for (int i = 0; i < conditions.size(); i++) {
+                ConditionResult cond = conditions.get(i);
+                if (i > 0) whereClause.append(" AND ");
+                whereClause.append(cond.getSql());
+                params.putAll(cond.getParams());
+            }
+        }
+
+        String finalSql = countSelect + fromClause + whereClause;
+
+        return new QueryWithParams(finalSql, new MapSqlParameterSource(params));
+    }
+}
+
+@RestController
+@RequestMapping("/cases")
+public class CaseSearchController {
+
+    @Autowired
+    private NamedParameterJdbcTemplate jdbc;
+
+    @Autowired
+    private CaseSearchQueryBuilder queryBuilder;
+
+    @PostMapping("/search")
+    public PaginatedResponse search(@RequestBody SearchParam sp) {
+        var query = queryBuilder.build(sp);
+        var countQuery = queryBuilder.buildCountQuery(sp);
+
+        List<Map<String, Object>> results = jdbc.queryForList(query.getSql(), query.getParams());
+        Integer totalCount = jdbc.queryForObject(countQuery.getSql(), countQuery.getParams(), Integer.class);
+
+        int page = sp.getPagination() != null && sp.getPagination().getPage() != null ? sp.getPagination().getPage() : 0;
+        int size = sp.getPagination() != null && sp.getPagination().getSize() != null ? sp.getPagination().getSize() : 10;
+        int totalPages = (int) Math.ceil((double) totalCount / size);
+
+        return new PaginatedResponse(results, totalCount, page, size, totalPages);
+    }
+}
+
+public class PaginatedResponse {
+    private List<Map<String, Object>> data;
+    private int totalCount;
+    private int page;
+    private int size;
+    private int totalPages;
+
+    public PaginatedResponse(List<Map<String, Object>> data, int totalCount, int page, int size, int totalPages) {
+        this.data = data;
+        this.totalCount = totalCount;
+        this.page = page;
+        this.size = size;
+        this.totalPages = totalPages;
+    }
+    // getters and setters
+}
+
+
+
