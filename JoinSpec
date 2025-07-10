@@ -1,0 +1,1 @@
+public record JoinSpec(String sql, boolean alwaysJoin, List<String> defaultConditions) {}
