@@ -1,0 +1,99 @@
+@Component
+public class TranConditionBuilder implements SearchConditionBuilder<TranSearch> {
+
+    @Override
+    public String getSection() {
+        return "tran";
+    }
+
+    @Override
+    public Class<TranSearch> getParamType() {
+        return TranSearch.class;
+    }
+
+    @Override
+    public Optional<JoinSpec> getJoinSpec() {
+        return Optional.of(new JoinSpec("t", "LEFT JOIN tran_table t ON c.tran_sid = t.sid", JoinType.LEFT, false));
+    }
+
+    @Override
+    public List<String> getSelectColumns() {
+        return List.of("t.amount", "t.merchant_name");
+    }
+
+    @Override
+    public void buildConditions(TranSearch param, List<String> where, MapSqlParameterSource params) {
+        if (param == null) return;
+        if (param.getMerchantName() != null) {
+            where.add("t.merchant_name ILIKE CONCAT('%', :merchantName, '%')");
+            params.addValue("merchantName", param.getMerchantName());
+        }
+        if (param.getAmountFrom() != null) {
+            where.add("t.amount >= :amountFrom");
+            params.addValue("amountFrom", param.getAmountFrom());
+        }
+        if (param.getAmountTo() != null) {
+            where.add("t.amount <= :amountTo");
+            params.addValue("amountTo", param.getAmountTo());
+        }
+    }
+}
+@Component
+public class CaseSearchQueryBuilder {
+
+    private final List<SearchConditionBuilder<?>> builders;
+
+    public CaseSearchQueryBuilder(List<SearchConditionBuilder<?>> builders) {
+        this.builders = builders;
+    }
+
+    public QueryWithParams build(SearchParam sp, boolean countOnly) {
+        StringBuilder sql = new StringBuilder();
+        MapSqlParameterSource params = new MapSqlParameterSource();
+        List<String> selectFields = new ArrayList<>();
+        List<String> where = new ArrayList<>();
+        StringBuilder joinClause = new StringBuilder();
+
+        Map<String, Object> sections = Map.of(
+            "case", sp.getCaseSearch(),
+            "tran", sp.getTranSearch(),
+            "collab", sp.getCollabSearch(),
+            "fraud", sp.getFraudSearch()
+        );
+
+        for (SearchConditionBuilder<?> builder : builders) {
+            Object dto = sections.get(builder.getSection());
+            boolean hasInput = dto != null;
+            boolean isDefault = builder.getJoinSpec().map(JoinSpec::alwaysJoin).orElse(false);
+
+            // Join
+            if (isDefault || hasInput) {
+                builder.getJoinSpec().ifPresent(join -> joinClause.append(" ").append(join.sql()));
+            }
+
+            // SELECT fields
+            if (!countOnly && (hasInput || isDefault)) {
+                selectFields.addAll(builder.getSelectColumns());
+            }
+
+            // WHERE conditions
+            if (hasInput) {
+                invokeTypedBuildConditions(builder, dto, where, params);
+            }
+        }
+
+        String select = countOnly ? "SELECT COUNT(*)" : "SELECT " + String.join(", ", selectFields);
+        String finalSql = select + " FROM case_table c" + joinClause +
+                          (where.isEmpty() ? "" : " WHERE " + String.join(" AND ", where));
+
+        return new QueryWithParams(finalSql, params);
+    }
+
+    private <T> void invokeTypedBuildConditions(SearchConditionBuilder<T> builder, Object dto,
+                                                List<String> where, MapSqlParameterSource params) {
+        T typed = builder.getParamType().cast(dto);
+        builder.buildConditions(typed, where, params);
+    }
+
+    public record QueryWithParams(String sql, MapSqlParameterSource params) {}
+}
