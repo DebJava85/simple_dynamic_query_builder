@@ -1,0 +1,36 @@
+@Component
+public class CaseConditionBuilder implements SearchConditionBuilder<CaseSearch> {
+
+    @Override
+    public String getSection() {
+        return "case";
+    }
+
+    @Override
+    public Class<CaseSearch> getParamType() {
+        return CaseSearch.class;
+    }
+
+    @Override
+    public Optional<JoinSpec> getJoinSpec() {
+        return Optional.empty(); // no join needed, primary table
+    }
+
+    @Override
+    public List<String> getSelectColumns() {
+        return List.of("c.case_id", "c.case_number", "c.status");
+    }
+
+    @Override
+    public void buildConditions(CaseSearch param, List<String> where, MapSqlParameterSource params) {
+        if (param == null) return;
+        if (param.getCaseNumber() != null) {
+            where.add("c.case_number = :caseNumber");
+            params.addValue("caseNumber", param.getCaseNumber());
+        }
+        if (param.getCaseStatus() != null) {
+            where.add("c.status = :caseStatus");
+            params.addValue("caseStatus", param.getCaseStatus());
+        }
+    }
+}
