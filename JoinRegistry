@@ -1,0 +1,25 @@
+public class JoinRegistry {
+    public static final Map<String, JoinSpec> registry = Map.of(
+        "org", new JoinSpec(
+            "LEFT JOIN org_table o ON c.creator_org_id = o.org_id",
+            true,
+            List.of("o.org_id IS NOT NULL") // or optional o.status = 'ACTIVE'
+        ),
+        "sortcode", new JoinSpec(
+            "LEFT JOIN sort_code_config scc ON c.sort_code = scc.sort_code",
+            true,
+            List.of("scc.sort_code IS NOT NULL")
+        ),
+        "tran", new JoinSpec(
+            "LEFT JOIN tran_table t ON c.tran_sid = t.sid",
+            false,
+            List.of()
+        ),
+        "collab", new JoinSpec(
+            "LEFT JOIN collab_table cl ON c.case_id = cl.case_id",
+            false,
+            List.of()
+        )
+        // Add more
+    );
+}
